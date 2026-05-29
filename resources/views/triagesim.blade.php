@@ -1214,37 +1214,77 @@
             document.body.removeChild(link);
         }
 
+// Global tracker to chain sequential Day 2 states smoothly
+        window.nextScenarioChain = null;
+        window.savedStudentData = null;
+
         function checkStudentHistory(inputField) {
             const id = inputField.value.trim();
+            if (!id) return;
+
             const daySelect = document.getElementById('studentInputDay');
-            const scenarioOptions = document.getElementById('studentInputScenario').options;
+            const scenarioSelect = document.getElementById('studentInputScenario');
+            if (!scenarioSelect) return;
+            const scenarioOptions = scenarioSelect.options;
 
             const pastRecords = appState.studentRecords.filter(r => (r.student_id === id || r.id === id));
-            const hasCompletedDay1 = pastRecords.some(r => r.scenario && r.scenario.startsWith('Scenario A'));
+            const completedScenarios = pastRecords.map(r => r.scenario ? r.scenario.split(' (')[0].split(':')[0].trim() : '');
 
+            const hasCompletedDay1 = completedScenarios.includes("Scenario A");
+            const hasCompletedB = completedScenarios.includes("Scenario B");
+            const hasCompletedC = completedScenarios.includes("Scenario C");
+            const hasCompletedD = completedScenarios.includes("Scenario D");
+
+            const hasCompletedAllDay2 = hasCompletedB && hasCompletedC && hasCompletedD;
+
+            // Save student data context in case they use sequential button chaining
+            if (pastRecords.length > 0) {
+                window.savedStudentData = {
+                    id: id,
+                    name: pastRecords[0].student_name || pastRecords[0].name,
+                    cohort: pastRecords[0].cohort
+                };
+            }
+
+            // 1. Label completed modules with checkmarks
             for (let i = 0; i < scenarioOptions.length; i++) {
-                const shortTitle = scenarioOptions[i].getAttribute('data-original-text').split(' (')[0];
-                const alreadyDid = pastRecords.some(r => r.scenario.includes(shortTitle));
+                const originalText = scenarioOptions[i].getAttribute('data-original-text') || scenarioOptions[i].text;
+                if (!scenarioOptions[i].getAttribute('data-original-text')) {
+                    scenarioOptions[i].setAttribute('data-original-text', originalText);
+                }
 
-                if (alreadyDid) {
-                    scenarioOptions[i].text = shortTitle + " - ✓ (COMPLETED)";
+                const shortTitle = originalText.split(' (')[0].split(':')[0].trim();
+                if (completedScenarios.includes(shortTitle)) {
+                    scenarioOptions[i].text = originalText.split(' - ✓')[0] + " - ✓ (COMPLETED)";
                 } else {
-                    scenarioOptions[i].text = scenarioOptions[i].getAttribute('data-original-text');
+                    scenarioOptions[i].text = originalText;
                 }
             }
 
+            // 2. Strict Sequential Progression Gatekeeping
             if (daySelect) {
-                daySelect.querySelector('option[value="2"]').disabled = !hasCompletedDay1;
-                daySelect.querySelector('option[value="3"]').disabled = !hasCompletedDay1;
+                const opt1 = daySelect.querySelector('option[value="1"]');
+                const opt2 = daySelect.querySelector('option[value="2"]');
+                const opt3 = daySelect.querySelector('option[value="3"]');
 
-                if (!hasCompletedDay1 && (daySelect.value === '2' || daySelect.value === '3')) {
+                if (opt1) opt1.disabled = true;
+                if (opt2) opt2.disabled = true;
+                if (opt3) opt3.disabled = true;
+
+                if (!hasCompletedDay1) {
+                    if (opt1) opt1.disabled = false;
                     daySelect.value = '1';
-                }
-
-                if (hasCompletedDay1 && daySelect.value === '1') {
+                } else if (!hasCompletedAllDay2) {
+                    if (opt2) opt2.disabled = false;
                     daySelect.value = '2';
+                } else {
+                    if (opt3) opt3.disabled = false;
+                    daySelect.value = '3';
                 }
             }
+
+            // Cache progression checkpoints globally to let the option filter hide things accurately
+            window.day2Progression = { hasCompletedB, hasCompletedC, hasCompletedD };
 
             updateScenarioOptionsByDay();
         }
@@ -1255,99 +1295,156 @@
             if (!daySelect || !scenarioSelect) return;
 
             const selectedDay = parseInt(daySelect.value, 10);
+            const prog = window.day2Progression || { hasCompletedB: false, hasCompletedC: false, hasCompletedD: false };
             let firstSelectableIndex = -1;
 
             for (let i = 0; i < scenarioSelect.options.length; i++) {
                 const option = scenarioSelect.options[i];
                 const optionDay = parseInt(option.getAttribute('data-day'), 10);
+                const shortTitle = option.getAttribute('data-original-text').split(' (')[0].split(':')[0].trim();
                 const isCompleted = option.text.includes('✓ (COMPLETED)');
 
+                // Hide scenarios not belonging to current day configuration
                 if (optionDay !== selectedDay) {
                     option.hidden = true;
                     option.disabled = true;
-                } else {
-                    option.hidden = false;
-                    option.disabled = isCompleted;
-                    if (!option.disabled && firstSelectableIndex === -1) {
-                        firstSelectableIndex = i;
+                    option.style.display = 'none';
+                    continue;
+                }
+
+                // Default state for visible options
+                option.hidden = false;
+                option.style.display = 'block';
+                option.disabled = isCompleted;
+
+                // --- DAY 2 LINEAR UNLOCK FLOW (B -> C -> D) ---
+                if (selectedDay === 2) {
+                    if (shortTitle === "Scenario B" && isCompleted) {
+                        option.disabled = true;
                     }
+                    else if (shortTitle === "Scenario C" && !prog.hasCompletedB) {
+                        option.disabled = true; // Hidden/Locked until B is completely out of the way
+                    }
+                    else if (shortTitle === "Scenario D" && (!prog.hasCompletedB || !prog.hasCompletedC)) {
+                        option.disabled = true; // Hidden/Locked until C is completely out of the way
+                    }
+                }
+
+                if (!option.disabled && firstSelectableIndex === -1) {
+                    firstSelectableIndex = i;
                 }
             }
 
-            if (scenarioSelect.selectedIndex < 0 || scenarioSelect.options[scenarioSelect.selectedIndex].hidden || scenarioSelect.options[scenarioSelect.selectedIndex].disabled) {
-                if (firstSelectableIndex >= 0) {
-                    scenarioSelect.selectedIndex = firstSelectableIndex;
-                }
+            if (scenarioSelect.selectedIndex < 0 ||
+                scenarioSelect.options[scenarioSelect.selectedIndex].hidden ||
+                scenarioSelect.options[scenarioSelect.selectedIndex].disabled) {
+                scenarioSelect.selectedIndex = firstSelectableIndex;
             }
         }
 
-        function startStudentMode() {
-            const inputName = document.getElementById('studentInputName').value.trim();
-            const inputId = document.getElementById('studentInputId').value.trim();
-            const alertBox = document.getElementById('statusAlertBox');
-            const alertText = document.getElementById('statusAlertText');
+        function dispatchSessionPayload(payload, successMessage) {
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
 
-            if (!inputName || !inputId) {
-                alertText.innerText = "Error: Student Name and ID are strictly required to track your research protocol.";
-                alertBox.classList.remove('hidden');
+            document.getElementById('resultModal').classList.add('hidden');
+            document.getElementById('susModal').classList.add('hidden');
+
+            // Calculate sequence chaining pathways for Day 2 linear routing
+            window.nextScenarioChain = null;
+            if (payload.scenario.includes("Scenario B")) {
+                window.nextScenarioChain = { value: "SCENARIO_C_START", name: "Scenario C" };
+            } else if (payload.scenario.includes("Scenario C")) {
+                window.nextScenarioChain = { value: "SCENARIO_D_START", name: "Scenario D" };
+            }
+
+            if (csrfMeta && csrfMeta.getAttribute('content')) {
+                fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfMeta.getAttribute('content')
+                    },
+                    body: JSON.stringify(payload)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    appState.studentRecords.push(payload);
+                    refreshDashboard();
+                    showSuccessModal(successMessage);
+                })
+                .catch(err => console.error("Database sync exception: ", err));
+            } else {
+                appState.studentRecords.push(payload);
+                refreshDashboard();
+                showSuccessModal(successMessage + " (Saved Locally)");
+            }
+        }
+
+        function showSuccessModal(message) {
+            document.getElementById('successModalMessage').innerText = message;
+            const actionContainer = document.getElementById('successModalActions');
+            actionContainer.innerHTML = ''; // Clear prior elements
+
+            if (window.nextScenarioChain) {
+                // Change prompt text to ask them if they want to move to the next item
+                document.getElementById('successModalMessage').innerText =
+                    message + ` Would you like to proceed immediately to ${window.nextScenarioChain.name}?`;
+
+                // Add the immediate chain progression action item
+                const proceedBtn = document.createElement('button');
+                proceedBtn.className = "w-full py-3 px-4 bg-brand-teal hover:bg-brand-tealDark text-white font-bold rounded-xl transition-all shadow-lg shadow-brand-teal/20 mb-2";
+                proceedBtn.innerText = `Yes, Proceed to ${window.nextScenarioChain.name}`;
+                proceedBtn.onclick = function() {
+                    executeImmediateChainRoute();
+                };
+                actionContainer.appendChild(proceedBtn);
+
+                // Add the normal back-out option
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = "w-full py-2 px-4 bg-slate-100 hover:bg-slate-200 text-brand-dark font-medium rounded-xl transition-all text-sm";
+                cancelBtn.innerText = "No, Return to Main Menu";
+                cancelBtn.onclick = function() {
+                    closeSuccessModal();
+                };
+                actionContainer.appendChild(cancelBtn);
+            } else {
+                // Standard closure layout button setup
+                const defaultBtn = document.createElement('button');
+                defaultBtn.className = "w-full py-3 px-4 bg-brand-teal hover:bg-brand-tealDark text-white font-bold rounded-xl transition-all shadow-lg shadow-brand-teal/20";
+                defaultBtn.innerText = "Return to Main Menu";
+                defaultBtn.onclick = function() {
+                    closeSuccessModal();
+                };
+                actionContainer.appendChild(defaultBtn);
+            }
+
+            document.getElementById('successModal').classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function executeImmediateChainRoute() {
+            if (!window.nextScenarioChain || !window.savedStudentData) {
+                closeSuccessModal();
                 return;
             }
 
-            const daySelect = document.getElementById('studentInputDay');
-            const scenarioSelect = document.getElementById('studentInputScenario');
-            const selectedScenario = scenarioSelect.value;
-            const fullScenarioText = scenarioSelect.options[scenarioSelect.selectedIndex].text;
-            const selectedDay = parseInt(daySelect.value, 10);
-            const selectedOptionDay = parseInt(scenarioSelect.options[scenarioSelect.selectedIndex].getAttribute('data-day'), 10);
+            const targetChain = window.nextScenarioChain;
+            const profile = window.savedStudentData;
 
-            if (scenarioSelect.options[scenarioSelect.selectedIndex].disabled) {
-                alertText.innerText = "Error: You have already completed this scenario on a previous day.";
-                alertBox.classList.remove('hidden');
-                return;
-            }
+            // Shut down modal overlay elements safely
+            document.getElementById('successModal').classList.add('hidden');
+            window.nextScenarioChain = null;
 
-            if (selectedDay !== selectedOptionDay) {
-                alertText.innerText = "Error: Please choose a scenario that matches the selected day.";
-                alertBox.classList.remove('hidden');
-                return;
-            }
-
-            const shortScenarioTitle = fullScenarioText.split(' (')[0];
-
-            const studentPastRecords = appState.studentRecords.filter(r => (r.student_id === inputId || r.id === inputId));
-
-            if (studentPastRecords.length >= 3) {
-                alertText.innerText = "Research Concluded: You have successfully completed all 3 days of testing! Thank you for participating.";
-                alertBox.classList.remove('hidden');
-                return;
-            }
-
-            const todayStr = new Date().toLocaleDateString();
-            const playedToday = studentPastRecords.some(r => {
-                let rDate = r.created_at ? new Date(r.created_at).toLocaleDateString() : new Date().toLocaleDateString();
-                return rDate === todayStr;
-            });
-
-            if (playedToday) {
-                alertText.innerText = "Protocol Rule: You can only complete one scenario per day. You have already finished today's session. Please return tomorrow.";
-                alertBox.classList.remove('hidden');
-                return;
-            }
-
-            isFinalDay = (studentPastRecords.length === 2);
-            alertBox.classList.add('hidden');
-
-            currentState = selectedScenario;
+            // Direct internal boot initialization tracking sequence
+            currentState = targetChain.value;
             deviations = 0;
             answerHistory = [];
 
-            const inputCohort = document.getElementById('studentInputCohort').value;
             currentSession = {
-                id: inputId,
-                name: inputName,
-                cohort: inputCohort,
-                scenarioName: shortScenarioTitle,
-                startState: selectedScenario,
+                id: profile.id,
+                name: profile.name,
+                cohort: profile.cohort,
+                scenarioName: targetChain.name,
+                startState: targetChain.value,
                 cumulativeLatency: 0, steps: 0, optimalSteps: 0,
                 finalLatency: 0, finalEfficiency: 0, finalAccuracy: 0,
                 attemptsRemaining: 3
@@ -1358,13 +1455,122 @@
             document.getElementById('telemetryEfficiency').innerText = "100%";
             document.getElementById('telemetryDeviations').innerText = "0";
 
-            document.getElementById('studentInputName').value = '';
-            document.getElementById('studentInputId').value = '';
-            document.querySelectorAll('input[type="radio"]').forEach(radio => radio.checked = false);
-
+            // Open screen views directly bypassing intermediate setup procedures
             showView('studentView');
             renderFSMNode();
         }
+
+        function closeSuccessModal() {
+            document.getElementById('successModal').classList.add('hidden');
+            window.nextScenarioChain = null;
+
+            // Re-trigger login evaluation check to update table view selections dynamically
+            const idInput = document.getElementById('studentInputId');
+            if (idInput && idInput.value.trim()) {
+                checkStudentHistory(idInput);
+            }
+
+            showView('homeView');
+        }
+
+        function startStudentMode() {
+    const inputName = document.getElementById('studentInputName').value.trim();
+    const inputId = document.getElementById('studentInputId').value.trim();
+    const alertBox = document.getElementById('statusAlertBox');
+    const alertText = document.getElementById('statusAlertText');
+
+    if (!inputName || !inputId) {
+        alertText.innerText = "Error: Student Name and ID are strictly required to track your research protocol.";
+        if (alertBox) alertBox.classList.remove('hidden');
+        return;
+    }
+
+    const scenarioSelect = document.getElementById('studentInputScenario');
+    const selectedScenario = scenarioSelect.value;
+    const fullScenarioText = scenarioSelect.options[scenarioSelect.selectedIndex].text;
+
+    if (scenarioSelect.options[scenarioSelect.selectedIndex].disabled) {
+        alertText.innerText = "Error: This scenario is currently locked or already completed.";
+        if (alertBox) alertBox.classList.remove('hidden');
+        return;
+    }
+
+    const shortScenarioTitle = fullScenarioText.split(' (')[0].split(':')[0].trim();
+    const studentPastRecords = appState.studentRecords.filter(r => (r.student_id === inputId || r.id === inputId));
+    const completedScenarios = studentPastRecords.map(r => r.scenario ? r.scenario.split(' (')[0].split(':')[0].trim() : '');
+
+    // Fully concluded lockout check
+    if (completedScenarios.includes('Scenario E')) {
+        alertText.innerText = "Research Concluded: You have successfully completed the testing protocol! Thank you.";
+        if (alertBox) alertBox.classList.remove('hidden');
+        return;
+    }
+
+    // --- DAY 2 DATE RESTRICTION FIX ---
+    const todayStr = new Date().toLocaleDateString();
+    const recordsToday = studentPastRecords.filter(r => {
+        let rDate = r.created_at ? new Date(r.created_at).toLocaleDateString() : new Date().toLocaleDateString();
+        return rDate === todayStr;
+    });
+
+    if (recordsToday.length > 0) {
+        const todayScenarios = recordsToday.map(r => r.scenario ? r.scenario.split(' (')[0].split(':')[0].trim() : '');
+
+        // 1. If they did Day 1 (Scenario A) today, they are blocked from starting Day 2 items today
+        if (todayScenarios.includes('Scenario A')) {
+            alertText.innerText = "Protocol Rule: You have completed Day 1 requirements today. Please return tomorrow for Day 2.";
+            if (alertBox) alertBox.classList.remove('hidden');
+            return;
+        }
+
+        // 2. If they did Day 3 (Scenario E) today, they are finished
+        if (todayScenarios.includes('Scenario E')) {
+            alertText.innerText = "Research Concluded: You have already completed the final post-test today.";
+            if (alertBox) alertBox.classList.remove('hidden');
+            return;
+        }
+
+        // 3. On Day 2, allow consecutive plays (B -> C -> D). Only lock them out if they finished D today!
+        if (todayScenarios.includes('Scenario D')) {
+            alertText.innerText = "Protocol Rule: Day 2 completed. Please return tomorrow for the final post-test.";
+            if (alertBox) alertBox.classList.remove('hidden');
+            return;
+        }
+    }
+
+    // Set flag to trigger the SUS survey on Scenario E completion
+    isFinalDay = shortScenarioTitle.includes('Scenario E');
+    if (alertBox) alertBox.classList.add('hidden');
+
+    currentState = selectedScenario;
+    deviations = 0;
+    answerHistory = [];
+
+    const inputCohort = document.getElementById('studentInputCohort').value;
+    currentSession = {
+        id: inputId,
+        name: inputName,
+        cohort: inputCohort,
+        scenarioName: shortScenarioTitle,
+        startState: selectedScenario,
+        cumulativeLatency: 0, steps: 0, optimalSteps: 0,
+        finalLatency: 0, finalEfficiency: 0, finalAccuracy: 0,
+        attemptsRemaining: 3
+    };
+
+    if (document.getElementById('telemetryName')) document.getElementById('telemetryName').innerText = currentSession.name;
+    if (document.getElementById('scenarioTitle')) document.getElementById('scenarioTitle').innerText = `Active Case: ${currentSession.scenarioName}`;
+    if (document.getElementById('telemetryEfficiency')) document.getElementById('telemetryEfficiency').innerText = "100%";
+    if (document.getElementById('telemetryDeviations')) document.getElementById('telemetryDeviations').innerText = "0";
+
+    // Clear login input elements for the next cycle
+    document.getElementById('studentInputName').value = '';
+    document.getElementById('studentInputId').value = '';
+    document.querySelectorAll('input[type="radio"]').forEach(radio => radio.checked = false);
+
+    showView('studentView');
+    renderFSMNode();
+}
 
         function selectOption(nextStateID, isOptimal, answerText) {
             let latencyElapsed = parseFloat(((Date.now() - nodeDisplayTime) / 1000).toFixed(2));
